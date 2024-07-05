@@ -122,6 +122,48 @@ terraform {
 
 
 
+# terraform_remote_state
+
+WebサーバーのクラスタがMySQLと通信する構成を考えた時、
+これらのリソースをTerraformで構築するとします。
+
+この場合、データベースサーバーと比べてWebサーバーのデプロイ頻度はかなり高いです。
+そのため、Terraformで同じ構成ファイルに入れるのは避けた方が良いです。
+
+このようなケースでは、 terraform_remote_stateを使用することでデータベースとWebサーバーを分離することができます。
+**terraform_remote_stateデータソースは使用することで、異なるterraformバックエンドから出力変数情報を読み出せるようにすることができます。**
+
+```json
+data "terraform_remote_state" "db"{
+    backend = "s3"
+
+    config = {
+        bucket  = "(terraform_backend_bucketname)"
+        key     = "stage/data-stores/mysql/terraform/tfstate"
+        region  = "ap-northeast-1"
+    }
+}
+```
+
+terraform_remote_stateが渡すデータは読み取り専用です。
+そのため、Webサーバーに関するTerraformコード(IaC)が、データベースのterraformバックエンドのステートに影響を与えることはありえません。
+データベースに関して何かしらの問題を引き起こすこともなく、データベースのデータを取得できます。
+
+
+データベースの出力変数は以下のやり方で参照可能です。
+
+```tf
+data.terraform.remote_state.<NAME(今回だとdb)>.outputs.<ATTRIBUTE>
+```
+
+
+
+
+
+
+
+
+
 
 
 
