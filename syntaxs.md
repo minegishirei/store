@@ -1,160 +1,365 @@
-Terraformのステート管理
-
-tttttttttttttttttttttttt
 
 
-
-Terraformはapplyを実行するたびに、以前作成したリソースを見つけて更新することができます。
-この時、Terraformは**State管理**と呼ばれる方法でクラウドに存在する自身が管理しているリソースを見つけています。
+ttttttttttttttttttttt
 
 
-- Terraformステートとは
-- ステートファイルを共有ストレージで管理する（Terraformバックエンド）
-- ステートファイルの分離方法2種
-- `terraform_remote_state`
 
-Terraformを実行する場合、Terraformは構築したリソースの情報を **ステートファイル**に格納します。
-デフォルトでは`terraform apply`実行時のカレントディレクトリに ステートファイルである`.tfstate`というファイルを作成し、そこで情報を管理しています。
+Terraformにおける環境の分離は、いくつか手段があります。
 
-`.tfstate` は以下のようなjson形式のファイルです。
-`id`属性等を使用してAWSリソースの中から特定の情報を見つけ出します。
+- ワークスペースの分離
+- ファイルレイアウトによる分離
 
-```json
-{
-    "version": 1,
-    "serial": 7,
-    "modules": [
-        {
-            "path": [
-                "root"
-            ],
-            "outputs": {},
-            "resources": {
-                "aws_route53_record.site": {
-                    "type": "aws_route53_record",
-                    "depends_on": [
-                        "aws_route53_zone.primary",
-                        "aws_s3_bucket.site",
-                        "aws_s3_bucket.site"
-                    ],
-                    "primary": {
-                        "id": "Z2OIQETM3FU6D_mikeball.me_A",
-                        "attributes": {
-                            "alias.#": "1",
-                            "alias.701075612.evaluate_target_health": "false",
-                            "alias.701075612.name": "s3-website-us-west-2.amazonaws.com",
-                            "alias.701075612.zone_id": "Z3BJ6K6RIION7M",
-                            "failover": "",
-                            "fqdn": "mikeball.me",
-                            "health_check_id": "",
-                            "id": "Z2OIQETM3FU6D_mikeball.me_A",
-                            "name": "mikeball.me",
-                            "records.#": "0",
-                            "set_identifier": "",
-                            "ttl": "0",
-                            "type": "A",
-                            "weight": "-1",
-                            "zone_id": "Z2OIQETM3FU6D"
-                        }
-                    }
-                },
-                ...
+
+ワークスペースによる分離は環境間の完全な分離を保証できません。
+
+- バックエンドが同じリソースを使用してしまう（AWSであれば同じS3バケットに保存されてしまう）
+- `terraform workspace`コマンドを実行しない限り、どのワークスペースを使用中なのかが確認できない
+
+これにより、ワークスペースの使用は間違いを引き起こしがちになり、ともすれば間違ったワークスペースにデプロイしてしまう可能性もあります。
+これらの欠点から、ステージング環境と本番環境の分離にワークスペースを活用するのは適切ではありません。
+
+主観 : **もし完全な分離を望むのであれば、AWSアカウントごとの分離がベストですが、各企業のアカウント払出し事情に応じてできない可能性もあります。**
+その場合、環境の分離にはファイルごと分離することがおすすめです。
+
+
+## ファイルレイアウトによる分離
+
+各環境の完全な分離のためには、次の手段が考えられます。
+
+- 各環境用のTerraformファイルをそれぞれ別のフォルダに入れます。
+    - `stage` : ステージング環境(動作確認を行う環境)
+    - `prod`  : 本番環境
+    - `mgmt`  : DevOpsツール用の環境
+- 環境ごとに異なるバックエンド(AWSであればことなるS3バケット)を使用します。
+
+
+
+
+
+
+
+
+
+## モジュールを使わない場合の構成
+
+Terraformで複数の環境を用意する場合、モジュールを使用しない場合は、コピーアンドペーストで重複の多いコードになりますが、
+主観的にも経験則的にもそれで問題ないです。
+
+まずフォルダ構成のベストプラクティスとして、
+各環境用のTerraformファイルをそれぞれ別のフォルダに入れます。
+
+- `stage` : ステージング環境(動作確認を行う環境)
+- `prod`  : 本番環境
+- `mgmt`  : DevOpsツール用の環境
+- `global` : 上記の環境で共通して使うリソース
+
+さらに各環境の構成図は以下の通りです。
+
+```
+├── global
+│   └── s3
+│       ├── README.md
+│       ├── main.tf
+│       ├── outputs.tf
+│       └── variables.tf
+│── stage
+│   ├── data-stores
+│   │   └── mysql
+│   │       ├── README.md
+│   │       ├── main.tf
+│   │       ├── outputs.tf
+│   │       └── variables.tf
+│   └── services
+│       └── webserver-cluster
+│           ├── README.md
+│           ├── main.tf
+│           ├── outputs.tf
+│           ├── user-data.sh
+│           └── variables.tf
+│── prod
+│   ├── data-stores
+│   │   └── mysql
+│   │       ├── README.md
+│   │       ├── main.tf
+│   │       ├── outputs.tf
+│   │       └── variables.tf
+│   └── services
+│       └── webserver-cluster
+│           ├── README.md
+│           ├── main.tf
+│           ├── outputs.tf
+│           ├── user-data.sh
+│           └── variables.tf
+```
+
+各環境のフォルダは以下には、コンポーネントごとのフォルダがあります。
+コンポーネントもプロジェクトごとに異なりますが、よく使われるのは以下の通りです。
+
+- `vpc` : 各環境のネットワークトポロジー
+- `services` : この環境で動かすアプリケーションがあるフォルダー。RubyやPythonなどの各言語のビジネスロジックはここに集約される。
+マイクロサービスの場合はさらに細かく分離される。
+- `data-storage` : 永続化層のこと。この環境で使うMySQLやAWS Aurora、DynamoDBなどのデータストア。
+
+これらの配下には次のようなファイルが置かれます。
+特に、Terraformでは**入力変数と出力変数を明記することで、その他の開発者がコードの意図を推測しやすくなります。**
+
+- 必須レベルのファイル構成
+    - `variables.tf` : 入力変数
+    - `outputs.tf` : 出力変数
+    - `main.tf` : その他メインで使用するリソース
+    - `providers.tf` : 使用するプロバイダとどんな認証情報が必要になるかがわかります。
+- おすすめのファイル構成
+    - `dependencies.tf` : データソースをすべてdependencies.tfに入れることで、コードが外部に依存している部分をわかりやすくすることもできます。
+    - `main-xxx.tf` : リソースが増えて`main.tf`が長くなり出したらさらに分割しても良いです。
+        - 分け方はさまざまであり、 `main-s3.tf`や `main-iam.tf`などリソース単位の分割もありえます。
+        - また、ec2やecsなどのサーバーは `main-compute.tf`に分けるなど役割単位での分割もあります。
+
+**モジュールを使おうと、使わなかろうと、 これらのファイル構成を意識しておくことは推測しやすいコードを書くために重要です。**
+
+
+
+## モジュールを使う場合の構成
+
+通常は社内のステージング環境と、実際のユーザーがアクセスする本番環境の少なくとも二つが必要になります。
+Terraformで複数の環境を用意する場合、モジュールを使用しない場合は、コピーアンドペーストで重複の多いコードになります。
+
+主観的にも経験則的にもそれで問題ないですが、再利用性をさらに向上させるためには、IaCコードをモジュール化する必要があります。
+
+**Terraformモジュールを使うことで、同じコードをコピペを使わずステージング環境と本番環境間で使いまわせます。**
+
+モジュールを使う時のよくある構成図は以下の通りです。
+`prod`と`stage`以外に、 `modules`という共通部品フォルダーがあるのが確認できます。
+
+```
+├── modules
+│   └── services
+│       └── webserver-cluster
+│           ├── README.md
+│           ├── main.tf
+│           ├── outputs.tf
+│           ├── user-data.sh
+│           └── variables.tf
+├── prod
+│   ├── data-stores
+│   │   └── mysql
+│   │       ├── README.md
+│   │       ├── main.tf
+│   │       ├── outputs.tf
+│   │       └── variables.tf
+│   └── services
+│       └── webserver-cluster
+│           ├── README.md
+│           ├── main.tf
+│           ├── outputs.tf
+│           └── variables.tf
+└── stage
+    ├── data-stores
+    │   └── mysql
+    │       ├── README.md
+    │       ├── main.tf
+    │       ├── outputs.tf
+    │       └── variables.tf
+    └── services
+        └── webserver-cluster
+            ├── README.md
+            ├── main.tf
+            ├── outputs.tf
+            └── variables.t
 ```
 
 
-## Gitでステートファイルを管理するべきではない理由
 
-仮に個人でTerraformを使用しているのであれば、ローカルに置いたままでも特に問題はありません。
-しかし、実際のプロダクトでチーム開発を行う際には、 **ローカルでステートファイルを操作することで個人間で矛盾が生じする恐れがあります**
+### モジュールの基本
 
-また、このステートファイルは **AWSリソースの管理状態という実態を持つもの**であるため、gitで管理する方法も以下の理由で避けた方が良いです。
+Terraformモジュールはとてもシンプルな構造であり、**あるフォルダ内にあるTerraform設定ファイルの集まりは、モジュールになります。**
+ただし、フォルダ内部では `provider`定義を削除しておきましょう。
+これはモジュールを呼び出す側で定義するものです。
 
-- ステートファイルのプルが漏れたり、プッシュが漏れたりすることで、 **どのステートファイルが最新のものかがわからなくなってしまう**
-- ステートファイル内部には機密情報が記載されることがある (AWS Auroraのアドミンユーザーネームやパスワードなど) これはソースコードと一緒にバージョン管理するべきではない。
+プロバイダー定義を削除したらモジュールを使用できます。
+モジュールを使用するためには次のように文法を宣言します。(本番環境想定)
 
-Terraformのソースコード自体はGitで管理することは問題ありませんが、StateファイルをGitで管理すると個人間で矛盾が生じる恐れがあります。
+```js
+module "webserver_cluster" {
+  source = "../../../modules/services/webserver-cluster"
 
+  cluster_name           = var.cluster_name
+  db_remote_state_bucket = var.db_remote_state_bucket
+  db_remote_state_key    = var.db_remote_state_key
 
-## チームでステートファイルを管理する
+  instance_type = "m4.large"
+  min_size      = 2
+  max_size      = 10
+}
 
-そこで、 Terraformのソースコードを管理するためには **リモートバックエンド** と呼ばれる仕組みを使うことをおすすめします。
-リモートバックエンドはTerraformが提供してくれるステートファイルの管理方法で、以下の特徴があります。
-
-- リモートバックエンドは `apply`,`plan`コマンドの実行のたびに自動的にステートファイルをロードしてくれますし、
-`apply`コマンド実行のたびに新しく更新されたステートファイルをアップロードしてくれます。
-そのため、コミット漏れによる個人間のステートの矛盾は起こりません。
-- また、リモートバックエンドは暗号化をサポートしているため、S3に保存されたステートファイルからパスワードを確認されることもありません。
-
-TerraformをAWSで使用する場合は、S3をリモートバックエンドとして使うのが良いです。
-S3だと上記の特徴に加えて、以下のメリットがあります。
-
-- S3はバージョニングをサポートしてくれるので、昔のバージョンに戻りたいときはロールバックが可能です。
-- 安価です。
-- ほぼ(99.99%)壊れません。
-- 言ってしまえばただのファイル置き場なので、シンプルです。
-
-Terraformでリモートバックエンドを指定するには、Terraformソースコード内に`backend`構文を使用します。
-
-```py
-terraform {
-    backend "s3" {
-        bucket          = "terraform-state-<your_project_name>"
-        key             = "global/s3/terraform.tfstate"
-        region          = "ap-northeast-1"
-        encrypt         = true
-    }
+provider "aws" { # providerはモジュールの呼び出しがわで宣言する。
+  region = "us-east-2"
 }
 ```
 
-このコードを配置した後に、`terraform init`を実行すると、Terraformはステートファイルがローカルに存在することを検知して
-それをs3リモートバックエンドに保存するかどうか尋ねられます。 `yes`と答えると、指定したバケットとキーにステートファイルが保存されます。
+- `source` でモジュールフォルダーを指定します。
+- それ以下に続く引数の設定は、モジュール内部で宣言した `variables`に格納される値です。
+**モジュールに対する入力引数の設定は、リソースに対する引数の設定と同じ文法を使えます。**
+- このソースコードは `prod`フォルダー配下で管理することをお勧めします。
 
+上記は本番環境の設定なので、 EC2のスケールは2~10、インスタンスタイプは`m4.large`で、少しリッチな性能をしています。
+ステージング環境を作成するときは、本番環境と同程度のスペックは必要ありません。
+以下はステージング環境の要件に合わせてスペックを落としてます。
 
+```js
+module "webserver_cluster" {
+  source = "../../../modules/services/webserver-cluster"
 
+  cluster_name           = var.cluster_name
+  db_remote_state_bucket = var.db_remote_state_bucket
+  db_remote_state_key    = var.db_remote_state_key
 
+  instance_type = "t2.micro"
+  min_size      = 2
+  max_size      = 2
+}
 
-
-
-
-
-
-
-
-
-
-# terraform_remote_state
-
-WebサーバーのクラスタがMySQLと通信する構成を考えた時、
-これらのリソースをTerraformで構築するとします。
-
-この場合、データベースサーバーと比べてWebサーバーのデプロイ頻度はかなり高いです。
-そのため、Terraformで同じ構成ファイルに入れるのは避けた方が良いです。
-
-このようなケースでは、 terraform_remote_stateを使用することでデータベースとWebサーバーを分離することができます。
-**terraform_remote_stateデータソースは使用することで、異なるterraformバックエンドから出力変数情報を読み出せるようにすることができます。**
-
-```json
-data "terraform_remote_state" "db"{
-    backend = "s3"
-
-    config = {
-        bucket  = "(terraform_backend_bucketname)"
-        key     = "stage/data-stores/mysql/terraform/tfstate"
-        region  = "ap-northeast-1"
-    }
+provider "aws" { # providerはモジュールの呼び出しがわで宣言する。
+  region = "us-east-2"
 }
 ```
 
-terraform_remote_stateが渡すデータは読み取り専用です。
-そのため、Webサーバーに関するTerraformコード(IaC)が、データベースのterraformバックエンドのステートに影響を与えることはありえません。
-データベースに関して何かしらの問題を引き起こすこともなく、データベースのデータを取得できます。
+上記はEC2インスタンスのスケールを2で固定、インスタンスタイプは `t2.micro` でスペックを落としてます。
+**これでステージング環境のコストを抑えつつ、本番環境で十分な要件のスペックを担保し、それぞれのコードでコアとなる共有部分はまとめて管理することができました。**
+
+### モジュールの注意点
 
 
-データベースの出力変数は以下のやり方で参照可能です。
 
-```tf
-data.terraform.remote_state.<NAME(今回だとdb)>.outputs.<ATTRIBUTE>
+ただし、モジュールを使用する際には二点注意する必要があります。
+
+- 1.terraformで管理されているリソース名がハードコーディングされていないことに気をつけてください。
+AWSでは同じアカウント内で同一の名前を使うことができないため、ステージング環境と本番環境で同じアカウントで運用する場合は重複しないように気をつけましょう。
+**モジュールの中のリソース名はハードコーディングせず、`variables`をうまく使用して名前の重複を避けましょう。**
+
+```js
+resource "aws_autoscaling_group" "example" {
+  launch_configuration = aws_launch_configuration.example.name
+  vpc_zone_identifier  = data.aws_subnets.default.ids
+  target_group_arns    = [aws_lb_target_group.asg.arn]
+  health_check_type    = "ELB"
+
+  min_size = var.min_size
+  max_size = var.max_size
+
+  tag {
+    key                 = "Name"
+    value               = "${var.cluster_name}-asg"
+    propagate_at_launch = true
+  }
+}
 ```
+
+上記の例では `Name`タグに `"${var.cluster_name}-asg"`を当てることで `クラスタ名 + asg`という名前が充てられることが保証できます。
+
+
+- 2.`terraform_remote_state` データソースを使っている場合、ステージング環境も本番環境も同じソースコードを参照してしまっているので、
+データベースステートの読み取り方も変数を使用してハードコードを回避する必要があります。
+
+
+
+### 入力値のモジュール側の設定
+
+moduleを呼び出す際に、引数を設定して環境ごとに設定を変更する場合、
+引数は `variables.tf` でまとめて宣言することをお勧めします。
+
+
+
+```js
+# ---------------------------------------------------------------------------------------------------------------------
+# REQUIRED PARAMETERS
+# You must provide a value for each of these parameters.
+# ---------------------------------------------------------------------------------------------------------------------
+
+variable "cluster_name" {
+  description = "The name to use for all the cluster resources"
+  type        = string
+}
+
+variable "db_remote_state_bucket" {
+  description = "The name of the S3 bucket for the database's remote state"
+  type        = string
+}
+
+variable "db_remote_state_key" {
+  description = "The path for the database's remote state in S3"
+  type        = string
+}
+
+variable "instance_type" {
+  description = "The type of EC2 Instances to run (e.g. t2.micro)"
+  type        = string
+}
+
+variable "min_size" {
+  description = "The minimum number of EC2 Instances in the ASG"
+  type        = number
+}
+
+variable "max_size" {
+  description = "The maximum number of EC2 Instances in the ASG"
+  type        = number
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# OPTIONAL PARAMETERS
+# These parameters have reasonable defaults.
+# ---------------------------------------------------------------------------------------------------------------------
+
+variable "server_port" {
+  description = "The port the server will use for HTTP requests"
+  type        = number
+  default     = 8080
+}
+```
+
+
+
+
+
+
+
+### モジュールの値を取得する
+
+Terraformモジュールは `outputs`を使用することで値を返すことができます。
+これはプログラミングでの関数の戻り値に該当する機能です。
+
+例えば、AWSリソースでEC2のオートスケーリンググループを使用したサーバー群を立ち上げたとき、次のように返却値を設置すればテストなどが容易になります。
+以下の出力値のソースコードは `outputs.tf`でまとめて宣言することを推奨します。
+
+```js
+output "alb_dns_name" {
+  value       = aws_lb.example.dns_name
+  description = "The domain name of the load balancer"
+}
+
+output "asg_name" {
+  value       = aws_autoscaling_group.example.name
+  description = "The name of the Auto Scaling Group"
+}
+
+output "alb_security_group_id" {
+  value       = aws_security_group.alb.id
+  description = "The ID of the Security Group attached to the load balancer"
+}
+```
+
+
+
+## モジュールのバージョン管理
+
+ステージング環境と本番環境の両環境が同じモジュールのフォルダを指定しているときに、そのモジュールフォルダに変更を加えた場合は
+両環境で変更が発生してしまいます。
+その場合、**ステージング環境と本番環境で同じモジュールの別々のバージョンを使用することで、両環境を疎結合に保てます。**
+
+今までモジュールを呼び出すときには、`source`パラメーターにモジュールのファイルパスを指定してました。
+しかし、**Terraformはファイルパスに加えてGitのURLなどのリモートのソース管理システムを指定することができます。**
+
+`modules` : このリポジトリでは、再利用可能なモジュールを定義します。
 
 
 
