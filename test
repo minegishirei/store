@@ -1,0 +1,317 @@
+azurerm_linux_function_appによるzure Functionsの構築【Azure Terraform】
+Azure,Terraform
+17179246901377597932
+
+
+
+
+
+
+
+
+
+Azure Functionsの構築において、現在推奨される構成がFlex Consumptionです。
+本記事では、従来の `azurerm_linux_function_app` との違いを整理し、Terraform を用いた具体的な構築方法を解説します。
+
+※本記事で紹介した内容は2026年4月時点のTerraform AzureRMプロバイダーに基づいています。
+
+## 関連ページ
+
+- [コンソール画面を一切見ない、TerraformによるAzureの勉強](https://minegishirei.hatenablog.com/entry/2026/03/20/162218)
+- compute
+  - [Terraformからazurerm_linux_virtual_machineを呼び出し、Linux仮想マシンをAzureで動かす【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/08/105120)
+  - [Terraformからazurerm_container_appを呼び出し、コンテナをAzure上で実行する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/08/174416)
+- database
+  - [azurerm_postgresql_flexible_serverでPostgreSQLをAzureに建てる【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/04/01/194753)
+- iam
+  - [ロール定義とマネージドIDを作成する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/20/161335)
+- network
+  - [azurerm_virtual_networkでVNetを構築する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/18/201519)
+  - [azurerm_subnetでサブネットを構築する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/20/203245)
+  - [azurerm_network_security_groupでセキュリティグループを構築する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/21/180905)
+- storage
+  - [Terraformからazurerm_storage_containerを呼び出しAzure Storageを構築する【Azure Terraform】](https://minegishirei.hatenablog.com/entry/2026/03/22/211235)
+
+
+
+
+### `azurerm_function_app_flex_consumption` の違い `azurerm_linux_function_app` 
+
+- 結論 : `azurerm_function_app_flex_consumption` を選ぶ。
+基本的には 「Flex Consumption が次世代の標準」 という立ち位置であるため、linux環境のAzure Functionsリソース構築時には `azurerm_function_app_flex_consumption` を立てること。
+- 詳細 : `azurerm_function_app_flex_consumption`は 2024年に登場した新しい実行形態 「Flex Consumption」 専用のリソースです。
+従量課金(Cosumption)でありつつ、ネットワーク性能・スケーリングが可能です。
+
+Linux Function App にしかできないことは、ほぼないと言っていいです。
+
+
+### 実行時間
+
+AWS lambdaと同様にAzure Functions にも実行時間制限があり、最大実行時間は10分です。
+
+
+## サンプルコード
+
+以下は `azurerm_function_app_flex_consumption` を使用したサンプルコードです。
+
+Flex Consumptionは `azurerm_service_plan` のSKUに FC1 を指定することで利用可能になります。
+このFCはFlex Consumption略です。
+
+```ruby
+# 1. 変数定義（再利用性と保守性の向上）
+variable "project_name" {
+  default = "flex-demo"
+}
+
+variable "location" {
+  default = "japaneast" # お好みのリージョンに
+}
+
+provider "azurerm" {
+  features {}
+}
+
+# 2. リソースグループ
+resource "azurerm_resource_group" "example" {
+  name     = "rg-${var.project_name}"
+  location = var.location
+}
+
+# 3. ストレージアカウント
+# 名前は一意である必要があるため、ランダム文字列を付与するのが一般的です
+resource "azurerm_storage_account" "example" {
+  name                     = "st${var.project_name}001"
+  resource_group_name      = azurerm_resource_group.example.name
+  location                 = azurerm_resource_group.example.location
+  account_tier             = "Standard"
+  account_replication_type = "LRS"
+  
+  # セキュリティ強化：HTTPSのみ許可
+  enable_https_traffic_only = true
+  min_tls_version           = "TLS1_2"
+}
+
+resource "azurerm_storage_container" "example" {
+  name                  = "app-package"
+  storage_account_id    = azurerm_storage_account.example.id
+  container_access_type = "private"
+}
+
+# 4. Flex Consumption 用のサービスプラン
+resource "azurerm_service_plan" "example" {
+  name                = "asp-${var.project_name}"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  sku_name            = "FC1"
+  os_type             = "Linux"
+}
+
+# 5. Flex Consumption Function App
+resource "azurerm_function_app_flex_consumption" "example" {
+  name                = "func-${var.project_name}"
+  resource_group_name = azurerm_resource_group.example.name
+  location            = azurerm_resource_group.example.location
+  service_plan_id     = azurerm_service_plan.example.id
+
+  runtime_name            = "node"
+  runtime_version         = "20"
+  maximum_instance_count  = 50
+  instance_memory_in_mb   = 2048
+
+  # ストレージ設定の整理
+  storage {
+    type            = "blobContainer"
+    container_id    = azurerm_storage_container.example.resource_manager_id
+    authentication_type = "ConnectionString" # 本番では ManagedIdentity 推奨
+    # ここに storage_account_access_key を指定することも可能です
+  }
+
+  site_config {
+    # 必要に応じて、アプリケーション設定（環境変数）をここに追加
+    app_command_line = ""
+    
+    # Flex Consumption では、HTTP トリガーなどのために内部的な設定が自動最適化されます
+  }
+
+  # 認証の管理（Managed Identityを有効化）
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# 6. アウトプット（作成後にURLなどをすぐ確認できる）
+output "function_app_name" {
+  value = azurerm_function_app_flex_consumption.example.name
+}
+
+output "function_app_default_hostname" {
+  value = azurerm_function_app_flex_consumption.example.default_hostname
+}
+```
+
+
+
+## 引数一覧
+
+### 基本的な引数
+
+- name: Function App の名前。
+- resource_group_name: リソースグループ名。
+- location: リージョン。
+
+
+### 動作に関する設定
+
+- runtime_name: 使用する言語。 `node`, `dotnet-isolated`, `powershell` , `python` , `java`, `custom` から選択。
+    - `custom` ををしようする事で RustやGOを動かすこともできます。 参考 : https://qiita.com/qt-luigi/items/aad12cefcd4af825a632
+- runtime_version: ランタイムのバージョン。
+
+
+### ソースコードの格納
+
+- storage_container_type: ストレージの種類であり、現在は`blobContainer` が選択されています。 関数の実行コードが保管されています。
+- storage_container_endpoint: アプリケーションのデプロイに使用されるストレージコンテナのパス。
+- storage_authentication_type: ストレージへの認証方法
+
+
+### パフォーマンスに関する設定
+
+- `maximum_instance_count` : 最大インスタンス数。1~1000の間で設定可能
+- `always_ready` : 常に稼働させておくインスタンス数を指定できます。
+
+
+### ネットワークに関する設定
+
+- `virtual_network_subnet_id` : VNet内でのデプロイを行う際のオプションで、サブネットを指定することでその中に配置されます。ただし、このサブネット内の配置は必須ではないです。
+- `https_only` : httpsのみの接続を許可します。
+- `public_network_access_enabled` : パブリックネットワークからのアクセスを許可するかどうかです。デフォルトは許可。
+
+
+### site_config
+
+site_configブロックには Function Appsを公開するための設定が記載されます。
+
+#### IP制限 ip_restriction
+
+
+```ruby
+site_config {
+    # 特定のIPアドレス（例: 会社のオフィスなど）のみ許可
+    ip_restriction {
+        ip_address                = "203.0.113.10/32"
+        action                    = "Allow"
+        priority                  = 100
+        name                      = "AllowOfficeIP"
+        description               = "Allow access from office"
+    }
+
+    # 特定のサブネット（VNet）からのアクセスを許可
+    ip_restriction {
+        virtual_network_subnet_id = azurerm_subnet.example.id
+        action                    = "Allow"
+        priority                  = 200
+        name                      = "AllowVNetSubnet"
+    }
+
+    # デフォルトの挙動：
+    # 明示的に "Allow" を設定すると、それ以外は自動的に "Deny"（拒否）されます。
+}
+```
+
+- 設定時のポイント
+    - 優先順位 (`priority`): 数字が小さいほど優先されます。
+    - アクション (`action`): Allow（許可）または Deny（拒否）を指定します。
+
+`public_network_access_enabled = false` を設定している場合は、上記のIP制限は意味をなしません。
+
+
+### セキュリティ
+
+`active_directory` : Azure Active Directory で認証するために使用するブロックです。
+
+
+
+
+## プライベートエンドポイントについて
+
+プライベートエンドポイントを作成すると、内部的に `your-org.privatelink.palantirfoundry.com` のようなCNAMEが作られますが、
+サービスの利用時にこのエンドポイントを指定するのはNGです。
+特に、SSL/TLS証明書のエラーになる可能性が高いので...
+それでも問題ない場合は、指定しましょう。
+
+
+> private endpointへの疎通がどうしても取れません。
+> 
+> どんなアクションが検討されますか?
+> ちなみに
+> Vnet統合したFunctionsからエンドポイントを経由してfoundryにいきたいです。
+> VNet統合を解除したら通るので、ネットワーク起因なのは間違いないです。
+
+Anser
+
+
+> ### アクション1：【最重要】「名前解決（DNS）」が本当にプライベートIPを向いているか確認する
+> 
+> VNet統合したFunctionsが、FoundryのURL（例: `xxx.palantirfoundry.com`）を、パブリックIPではなく**プライベートIP（`10.x.x.x` など）に変換できているか**を確認します。
+> 
+> - **原因の仮説:** FunctionsがVNetに入ったものの、依然としてパブリックIPを探しにいってしまい、VNetのルールでパブリックへの出口が塞がれている（あるいはルートが迷子になっている）可能性があります。
+> - **対処法:**
+> 1. Azureポータルで、対象の **Private DNS Zone**（例: `privatelink.palantirfoundry.com`）を開きます。
+> 2. そこに、Foundryのドメイン名と、プライベートエンドポイントのIPアドレス（`10.x.x.x`）の紐付け（Aレコード）が正しく登録されているか確認します。
+> 3. そのPrivate DNS Zoneが、Azure Functionsが統合されている **VNetに「仮想ネットワークリンク（Virtual Network Link）」でリンクされているか**を確認してください。これがないと、FunctionsはPrivate DNS Zoneの存在に気づけません。
+> 
+> ### アクション2：ルーティング設定（アプリ設定）を追加・確認する
+> 
+> Azure Functions（特に旧プランや特定の構成）では、VNet統合しただけでは全ての通信がVNetに向かないことがあります。
+> 
+> - **原因の仮説:** FoundryへのHTTPS通信（アウトバウンド）が、VNet統合の回線を通らずに、以前のパブリックなルートを使おうとして失敗している。
+> - **対処法:** Azure Functionsの **「設定」＞「環境変数（またはアプリケーション設定）」** に、以下の2つの値を明示的に追加して、Functionsを再起動してください。
+> - `WEBSITE_VNET_ROUTE_ALL` = `1` （すべてのアウトバウンド通信を強制的にVNet経由にする設定です。Flex Consumptionや最新プランではデフォルトですが、念のため設定します）
+> - `WEBSITE_DNS_SERVER` = `168.63.129.16` （Azureの標準DNSを指定することで、Private DNS Zoneの名前解決を確実に利用させます）
+> 
+> ### アクション3：サブネットの「ネットワークセキュリティグループ（NSG）」を確認する
+> 
+> Functionsが所属するサブネットと、プライベートエンドポイントが所属するサブネットのセキュリティルールが通信を阻害している可能性があります。
+> 
+> - **原因の仮説:** VNet内のセキュリティ規則（NSG）で、Functionsからプライベートエンドポイントへの **「ポート 443 (HTTPS)」のアウトバウンド（送信）またはインバウンド（受信）** が拒否されている。
+> - **対処法:**
+> - **Functions側サブネットのNSG:** 送信規則（Outbound）で、プライベートエンドポイントのIP（またはサブネット）宛ての `443` ポートが「許可（Allow）」になっているか。
+> - **プライベートエンドポイント側サブネットのNSG:** 受信規則（Inbound）で、Functionsのサブネットからの `443` ポートが「許可（Allow）」になっているか。
+> 
+> ### アクション4：テスト用VMを立てて「切り分け」を行う（最終手段）
+> 
+> Functionsの中はブラックボックスでデバッグしにくいため、同じVNetの環境にテスト用のWindowsまたはLinuxの簡易VM（Virtual Machine）を1台デプロイします。
+> 
+> - **テスト方法:** Functionsが使っているのと同じVNet（可能なら同じサブネット、難しければ同じVNet内の別サブネット）にVMを配置し、そこからFoundryにアクセスを試みます。
+> - **VMから繋がる場合:** VNetやDNSのインフラ設定は正常です。原因は「Azure Functions固有の設定（アクション2のアプリ設定など）」にあります。
+> - **VMからも繋がらない場合:** インフラ設定全般が怪しいです。DNSリンク（アクション1）や、PE自体の作成ステータス（承認待ちになっていないか等）を見直してください。
+> 
+> ### 🛠️ まずどこから手をつけるべき？
+> 
+> まずは **アクション2（`WEBSITE_VNET_ROUTE_ALL` の追加）** を試してFunctionsを再起動してみてください。これで直るケースが非常に多いです。
+> 
+> それでもダメなら、**アクション1（Private DNS Zoneの「仮想ネットワークリンク」の有無）** をチェックするのが最短ルートです！
+
+
+
+## Azure VM やマネージドサービス
+
+もしコードを動かす場所がAzureのサービス（VM、Container Apps、Azure Functionsなど）であれば、そのリソース自体に「マネージドID」を付与できます。
+
+```python
+from azure.ai.projects import AIProjectClient
+from azure.identity import ManagedIdentityCredential
+
+# 引数を空にすると、実行中のAzureリソースに付与されたシステム割り当てマネージドIDを使用します
+credential = ManagedIdentityCredential()
+
+project_client = AIProjectClient(
+    endpoint="https://YOUR_PROJECT_ENDPOINT...",
+    credential=credential
+)
+```
+
+
+
+
+page:https://minegishirei.hatenablog.com/entry/2026/04/17/204737
